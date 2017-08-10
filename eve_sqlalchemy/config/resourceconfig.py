@@ -152,13 +152,15 @@ class ResourceConfig(object):
 
     def _get_column_fields(self):
         # We don't include "plain" foreign keys in our schema, as embedding
-        # would not work for them.
+        # would not work for them (except the id_field, which is always
+        # included).
         # TODO: Think about this decision again and maybe implement support for
         # foreign keys without relationships.
         return (f.key for f in self._mapper.column_attrs
                 if f.key not in self._ignored_fields
                 and isinstance(f.expression, expression.ColumnElement)
-                and len(f.expression.foreign_keys) == 0)
+                and (f.key == self._id_field
+                     or len(f.expression.foreign_keys) == 0))
 
     def _get_column_property_fields(self):
         return (f.key for f in self._mapper.column_attrs
