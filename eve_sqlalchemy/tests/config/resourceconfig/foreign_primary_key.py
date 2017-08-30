@@ -50,5 +50,7 @@ class TestForeignPrimaryKey(ResourceConfigTestCase):
                 'resource': 'nodes',
                 'field': 'id'
             },
-            'local_id_field': 'node_id'
+            'local_id_field': 'node_id',
+            'nullable': False,
+            'required': True
         })

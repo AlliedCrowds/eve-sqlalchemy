@@ -20,7 +20,7 @@ class Parent(Base):
 
 class Child(Base):
     id = Column(Integer, primary_key=True)
-    parent_id = Column(Integer, ForeignKey('parent.id'))
+    parent_id = Column(Integer, ForeignKey('parent.id'), nullable=False)
     parent = relationship("Parent", back_populates="child")
 
 
@@ -55,7 +55,8 @@ class TestOneToOneRelationship(ResourceConfigTestCase):
             'data_relation': {
                 'resource': 'children',
                 'field': 'id'
-            }
+            },
+            'nullable': True
         })
         self.assertNotIn('child_id', schema)
 
@@ -69,6 +70,8 @@ class TestOneToOneRelationship(ResourceConfigTestCase):
                 'resource': 'parents',
                 'field': 'id'
             },
-            'local_id_field': 'parent_id'
+            'local_id_field': 'parent_id',
+            'nullable': False,
+            'required': True
         })
         self.assertNotIn('parent_id', schema)

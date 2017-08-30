@@ -113,18 +113,22 @@ class RelationshipFieldConfig(FieldConfig):
             local_column = tuple(self.local_foreign_keys)[0]
         else:
             # TODO: Would item_lookup_field make sense here, too?
-            remote_column = self._relationship.target.columns[
-                resource_config.id_field]
+            remote_column = getattr(resource_config.model,
+                                    resource_config.id_field)
             local_column = None
         field_def = {
             'data_relation': {
                 'resource': resource,
                 'field': remote_column.key
             },
-            'type': self._get_field_type(remote_column)
+            'type': self._get_field_type(remote_column),
+            'nullable': True
         }
         if local_column is not None:
             field_def['local_id_field'] = local_column.key
+            if not getattr(local_column, 'nullable', True):
+                field_def['required'] = True
+                field_def['nullable'] = False
         return field_def
 
     def _get_resource(self):

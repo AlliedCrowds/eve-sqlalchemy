@@ -54,7 +54,8 @@ class TestManyToOneRelationship(ResourceConfigTestCase):
                 'resource': 'children',
                 'field': 'id'
             },
-            'local_id_field': 'child_id'
+            'local_id_field': 'child_id',
+            'nullable': True
         })
 
     def test_child_schema(self):

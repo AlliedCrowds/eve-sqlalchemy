@@ -41,5 +41,6 @@ class TestSelfReferentialRelationship(ResourceConfigTestCase):
                 'resource': 'nodes',
                 'field': 'name'
             },
-            'local_id_field': 'parent_node_name'
+            'local_id_field': 'parent_node_name',
+            'nullable': True
         })

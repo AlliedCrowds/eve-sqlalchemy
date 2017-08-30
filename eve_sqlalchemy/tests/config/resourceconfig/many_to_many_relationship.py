@@ -64,7 +64,8 @@ class TestManyToManyRelationship(ResourceConfigTestCase):
                 'data_relation': {
                     'resource': 'children',
                     'field': 'id'
-                }
+                },
+                'nullable': True
             }
         })
 
@@ -78,6 +79,7 @@ class TestManyToManyRelationship(ResourceConfigTestCase):
                 'data_relation': {
                     'resource': 'parents',
                     'field': 'id'
-                }
+                },
+                'nullable': True
             }
         })

@@ -63,7 +63,8 @@ class TestOneToManyRelationship(ResourceConfigTestCase):
                 'data_relation': {
                     'resource': 'children',
                     'field': 'id'
-                }
+                },
+                'nullable': True
             }
         })
 
