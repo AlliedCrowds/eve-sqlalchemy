@@ -17,9 +17,9 @@ from copy import copy
 from eve.io.base import ConnectionException
 from eve.io.base import DataLayer
 from eve.utils import config, debug_error_message, str_to_date
-from .parser import parse, parse_dictionary, ParseError, sqla_op, parse_sorting
+from .parser import parse, parse_dictionary, ParseError, sqla_op, parse_sorting, parse_distinct
 from .structures import SQLAResultCollection
-from .utils import dict_update, validate_filters, sqla_object_to_dict, extract_sort_arg
+from .utils import dict_update, validate_filters, sqla_object_to_dict, extract_sort_arg, extract_distinct_arg
 
 
 db = flask_sqlalchemy.SQLAlchemy()
@@ -94,7 +94,7 @@ class SQL(DataLayer):
         be expressed in two different formats: the mongo query syntax, and the
         python syntax. The first kind of query would look like: ::
 
-            ?where={"name": "john doe}
+            ?where={"name": "john doe"}
 
         while the second would look like: ::
 
@@ -107,13 +107,14 @@ class SQL(DataLayer):
         :param sub_resource_lookup: sub-resource lookup from the endpoint url.
         """
         args = {'sort': extract_sort_arg(req),
+                'distinct': extract_distinct_arg(req),
                 'resource': resource}
 
         client_projection = self._client_projection(req)
         client_embedded = self._client_embedded(req)
-        model, args['spec'], fields, args['sort'] = \
+        model, args['spec'], fields, args['sort'], args['distinct'] = \
             self._datasource_ex(resource, [], client_projection,
-                                args['sort'], client_embedded)
+                                args['sort'], args['distinct'], client_embedded)
         if req.where:
             try:
                 args['spec'] = self.combine_queries(args['spec'],
@@ -150,6 +151,11 @@ class SQL(DataLayer):
             for sort_item in args['sort']:
                 ql.append(parse_sorting(model, query, *sort_item))
             args['sort'] = ql
+        if args['distinct']:
+            ql = []
+            for distinct_item in args['distinct']:
+                ql.append(parse_distinct(model, query, *distinct_item))
+            args['distinct'] = ql
 
         if req.max_results:
             args['max_results'] = req.max_results
@@ -160,8 +166,8 @@ class SQL(DataLayer):
     def find_one(self, resource, req, **lookup):
         client_projection = self._client_projection(req)
         client_embedded = self._client_embedded(req)
-        model, filter_, fields, _ = \
-            self._datasource_ex(resource, [], client_projection, None,
+        model, filter_, fields, _, _ = \
+            self._datasource_ex(resource, [], client_projection, None, None,
                                 client_embedded)
 
         if isinstance(lookup.get(config.ID_FIELD), dict) \
@@ -185,7 +191,7 @@ class SQL(DataLayer):
 
     def insert(self, resource, doc_or_docs):
         rv = []
-        model, filter_, fields_, _ = self._datasource_ex(resource)
+        model, filter_, fields_, _, _ = self._datasource_ex(resource)
         for document in doc_or_docs:
             model_instance = model(**document)
             self.driver.session.add(model_instance)
@@ -196,7 +202,7 @@ class SQL(DataLayer):
         return rv
 
     def replace(self, resource, id_, document, original):
-        model, filter_, fields_, _ = self._datasource_ex(resource, [])
+        model, filter_, fields_, _, _ = self._datasource_ex(resource, [])
         id_field = self.driver.app.config['ID_FIELD']
         filter_ = self.combine_queries(filter_,
                                        parse_dictionary({id_field: id_}, model))
@@ -215,7 +221,7 @@ class SQL(DataLayer):
         self.driver.session.commit()
 
     def update(self, resource, id_, updates, original):
-        model, filter_, _, _ = self._datasource_ex(resource, [])
+        model, filter_, _, _, _ = self._datasource_ex(resource, [])
         id_field = self.driver.app.config['ID_FIELD']
         filter_ = self.combine_queries(filter_,
                                        parse_dictionary({id_field: id_}, model))
@@ -228,7 +234,7 @@ class SQL(DataLayer):
         self.driver.session.commit()
 
     def remove(self, resource, lookup):
-        model, filter_, _, _ = self._datasource_ex(resource, [])
+        model, filter_, _, _, _ = self._datasource_ex(resource, [])
         filter_ = self.combine_queries(filter_,
                                        parse_dictionary(lookup, model))
         query = self.driver.session.query(model)
@@ -272,7 +278,8 @@ class SQL(DataLayer):
         filter_ = self._parse_filter(model, filter_)
         projection_ = copy(config.SOURCES[resource]['projection'])
         sort_ = copy(config.SOURCES[resource]['default_sort'])
-        return model, filter_, projection_, sort_
+        distinct_ = copy(config.SOURCES[resource]['distinct'])
+        return model, filter_, projection_, sort_, distinct_
 
     # NOTE(Gonéri): preserve the _datasource method for compatibiliy with
     # pre 0.6 Eve release (See: commit 87742343fd0362354b9f75c749651f92d6e4a9c8
@@ -281,15 +288,16 @@ class SQL(DataLayer):
         return self.datasource(resource)
 
     def _datasource_ex(self, resource, query=None, client_projection=None,
-                       client_sort=None, client_embedded=None):
-        model, filter_, fields_, sort_ = \
+                       client_sort=None, client_distinct=None,
+                       client_embedded=None):
+        model, filter_, fields_, sort_, distinct_ = \
             super(SQL, self)._datasource_ex(resource, query, client_projection,
-                                            client_sort)
+                                            client_sort, client_distinct)
         filter_ = self._parse_filter(model, filter_)
         if client_embedded:
             fields_.update(client_embedded)
         fields = [field for field in fields_.keys() if fields_[field]]
-        return model, filter_, fields, sort_
+        return model, filter_, fields, sort_, distinct_
 
     def combine_queries(self, query_a, query_b):
         # TODO: dumb concatenation of query lists.

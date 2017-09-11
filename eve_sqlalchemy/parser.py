@@ -151,6 +151,25 @@ def parse_sorting(model, query, key, order=1, expression=None):
     return base_sort
 
 
+def parse_distinct(model, query, key, expression=None):
+    """
+    Distinct parser that works with embedded resources and sql expressions
+    Moved out from the query (find) method.
+    """
+    if '.' in key:  # distinct by related mapper class
+        rel, distinct_attr = key.split('.')
+        rel_class = getattr(model, rel).property.mapper.class_
+        query = query.outerjoin(rel_class)
+        base_distinct = getattr(rel_class, distinct_attr)
+    else:
+        base_distinct = getattr(model, key)
+
+    if expression:  # sql expressions
+        expression = getattr(base_distinct, expression)
+        base_distinct = expression()
+    return base_distinct
+
+
 class SQLAVisitor(ast.NodeVisitor):
     """Implements the python-to-sql parser. Only Python conditional
     statements are supported, however nested, combined with most common compare

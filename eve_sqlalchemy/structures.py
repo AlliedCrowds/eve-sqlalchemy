@@ -29,11 +29,14 @@ class SQLAResultCollection(object):
         self._fields = fields
         self._spec = kwargs.get('spec')
         self._sort = kwargs.get('sort')
+        self._distinct = kwargs.get('distinct')
         self._max_results = kwargs.get('max_results')
         self._page = kwargs.get('page')
         self._resource = kwargs.get('resource')
         if self._spec:
             self._query = self._query.filter(*self._spec)
+        if self._distinct:
+            self._query = self._query.distinct(*self._distinct).from_self()
         if self._sort:
             self._query = self._query.order_by(*self._sort)
 

@@ -90,3 +90,15 @@ def extract_sort_arg(req):
             return ast.literal_eval(req.sort)
     else:
         return None
+
+def extract_distinct_arg(req):
+    if req.distinct:
+        if re.match('^[-,\w]+$', req.distinct):
+            arg = []
+            for s in req.distinct.split(','):
+                arg.append([s])
+            return arg
+        else:
+            return ast.literal_eval(req.distinct)
+    else:
+        return None

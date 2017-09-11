@@ -11,7 +11,7 @@ with open('CHANGES') as f:
     LONG_DESCRIPTION += f.read()
 
 install_requires = [
-    'Eve>=0.5,<0.6',
+    'eve==0.7.4',
     'sqlalchemy>=0.8',
     'Flask-SQLAlchemy>=1.0,<2.999',
 ]
@@ -29,6 +29,7 @@ setup(
     packages=['eve_sqlalchemy'],
     test_suite="eve_sqlalchemy.tests",
     install_requires=install_requires,
+    dependency_links=['https://github.com/alliedcrowds/eve.git#egg=Eve'],
     extras_require={
         'tests': [
             'pytest',
