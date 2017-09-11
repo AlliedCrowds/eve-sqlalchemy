@@ -12,8 +12,10 @@ import re
 import ast
 import operator as sqla_op
 import json
+import itertools
 
 from eve.utils import str_to_date
+import sqlalchemy
 from sqlalchemy.ext.associationproxy import AssociationProxy
 from sqlalchemy.sql import expression as sqla_exp
 
@@ -38,18 +40,37 @@ def parse_dictionary(filter_dict, model):
 
     for k, v in filter_dict.items():
         # firts let's check with the expression parser
-
         try:
-            conditions += parse('{0}{1}'.format(k, v), model)
+            if(type(v) == type(u'')):
+                conditions += parse('{0}{1}'.format(k, v.encode('utf-8')), model)
+            else:
+                conditions += parse('{0}{1}'.format(k, v), model)
         except ParseError:
             pass
         else:
             continue
 
+        if k in ['and_', 'or_']:
+            try:
+                if not isinstance(v, list):
+                    v = json.loads(v)
+                operation = getattr(sqlalchemy, k)
+                _conditions = list(itertools.chain.from_iterable(
+                    [parse_dictionary(sv, model) for sv in v]))
+                conditions.append(operation(*_conditions))
+                continue
+            except (TypeError, ValueError):
+                raise ParseError("Can't parse expression '{0}'".format(v))
+
         attr = getattr(model, k)
 
         if isinstance(attr, AssociationProxy):
-            conditions.append(attr.contains(v))
+            # If the condition is a dict, we must use 'any' method to match
+            # objects' attributes.
+            if isinstance(v, dict):
+                conditions.append(attr.any(**v))
+            else:
+                conditions.append(attr.contains(v))
 
         elif hasattr(attr, 'property') and \
                 hasattr(attr.property, 'remote_side'):  # a relation
@@ -58,26 +79,34 @@ def parse_dictionary(filter_dict, model):
 
         else:
             try:
-                new_o, v = parse_sqla_operators(v)
-                new_filter = getattr(attr, new_o)(v)
+                new_op, v = parse_sqla_operators(v)
+                attr_op = getattr(attr, new_op, None)
+                if attr_op is not None:
+                    # try a direct call to named operator on attribute class.
+                    new_filter = attr_op(v)
+                else:
+                    # try to call custom operator also called "generic"
+                    # operator in SQLAlchemy documentation.
+                    # cf. sqlalchemy.sql.operators.Operators.op()
+                    new_filter = attr.op(new_op)(v)
             except (TypeError, ValueError):  # json/sql parse error
                 if isinstance(v, list):  # we have an array
                     new_filter = attr.in_(v)
                 else:
                     new_filter = sqla_op.eq(attr, v)
             conditions.append(new_filter)
-
     return conditions
 
 
 def parse_sqla_operators(expression):
     """
     Parse expressions like:
-        like('%john%')
-        ilike('john%')
-        in_(['a','b'])
+        like("%john%")
+        ilike("john%")
+        similar to("%(ohn|acob)")
+        in("('a','b')")
     """
-    m = re.match(r"(?P<operator>\w+)\((?P<value>.+)\)", expression)
+    m = re.match(r"(?P<operator>[\w\s]+)\(+(?P<value>.+)\)+", expression)
     if m:
         o = m.group('operator')
         v = json.loads(m.group('value'))
@@ -91,8 +120,35 @@ def parse(expression, model):
     (==, <=, >=, !=, >, <) are supported.
     """
     v = SQLAVisitor(model)
-    v.visit(ast.parse(expression))
+    try:
+        parsed_expr = ast.parse(expression)
+    except SyntaxError:
+        raise ParseError("Can't parse expression '{0}'".format(expression))
+
+    v.visit(parsed_expr)
     return v.sqla_query
+
+
+def parse_sorting(model, query, key, order=1, expression=None):
+    """
+    Sorting parser that works with embedded resources and sql expressions
+    Moved out from the query (find) method.
+    """
+    if '.' in key:  # sort by related mapper class
+        rel, sort_attr = key.split('.')
+        rel_class = getattr(model, rel).property.mapper.class_
+        query = query.outerjoin(rel_class)
+        base_sort = getattr(rel_class, sort_attr)
+    else:
+        base_sort = getattr(model, key)
+
+    if order == -1:
+        base_sort = base_sort.desc()
+
+    if expression:  # sql expressions
+        expression = getattr(base_sort, expression)
+        base_sort = expression()
+    return base_sort
 
 
 class SQLAVisitor(ast.NodeVisitor):
@@ -191,7 +247,10 @@ class SQLAVisitor(ast.NodeVisitor):
 
     def visit_Name(self, node):
         """ Names """
-        self.current_value = node.id
+        if node.id.lower() in ['none', 'null']:
+            self.current_value = None
+        else:
+            self.current_value = node.id
 
     def visit_Num(self, node):
         """ Numbers """

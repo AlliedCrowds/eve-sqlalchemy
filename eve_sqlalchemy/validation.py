@@ -24,19 +24,21 @@ class ValidatorSQL(Validator):
     Cerberus standard validation. For documentation please refer to the
     Validator class of the eve.io.mongo package.
     """
-    def __init__(self, schema, resource=None):
+    def __init__(self, schema, resource=None, allow_unknown=False):
         self.resource = resource
         self._id = None
         super(ValidatorSQL, self).__init__(schema,
                                            transparent_schema_rules=True,
                                            allow_unknown=False)
+        if resource:
+            self.allow_unknown = config.DOMAIN[resource]['allow_unknown']
 
     def validate_update(self, document, _id, original_document=None):
         self._id = _id
         self._original_document = original_document
         return super(ValidatorSQL, self).validate_update(document)
 
-    def validate_replace(self, document, _id):
+    def validate_replace(self, document, _id, original):
         self._id = _id
         return self.validate(document)
 
@@ -92,5 +94,13 @@ class ValidatorSQL(Validator):
     def _validate_type_objectid(self, field, value):
         """
         This field doesn't have a meaning in SQL
+        """
+        pass
+
+    def _validate_type_json(self, field, value):
+        """ Enables validation for `json` schema attribute.
+
+        :param field: field name.
+        :param value: field value.
         """
         pass

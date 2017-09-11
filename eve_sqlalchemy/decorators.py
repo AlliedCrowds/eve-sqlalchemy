@@ -7,9 +7,11 @@
 """
 
 from sqlalchemy.sql import expression
-from sqlalchemy.ext import hybrid
+from sqlalchemy.ext.hybrid import HYBRID_PROPERTY
+from sqlalchemy.ext.associationproxy import ASSOCIATION_PROXY
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy import types, inspect
+import sqlalchemy.dialects.postgresql as postgresql
 from sqlalchemy import schema as sqla_schema
 from eve.utils import config
 
@@ -18,18 +20,28 @@ from .utils import dict_update
 
 __all__ = ['registerSchema']
 
+sqla_type_mapping = {
+    types.Integer: 'integer',
+    types.Float: 'float',
+    types.Boolean: 'boolean',
+    types.Date: 'datetime',
+    types.DateTime: 'datetime',
+    types.DATETIME: 'datetime'
+}
 
-sqla_type_mapping = {types.Integer: 'integer',
-                     types.Float: 'float',
-                     types.Boolean: 'boolean',
-                     types.Date: 'datetime',
-                     types.DateTime: 'datetime',
-                     types.DATETIME: 'datetime'}
-# TODO: Add the remaining sensible SQL types
+
+def get_sqla_type_mapping():
+    try:
+        sqla_type_mapping[postgresql.JSON] = 'json'
+    except AttributeError:
+        # NOTE(Gonéri): JSON has been introduced in SQLAlchemy 0.9.0.
+        pass
+    # TODO: Add the remaining sensible SQL types
+    return sqla_type_mapping
 
 
 def lookup_column_type(intype):
-    for sqla_type, api_type in sqla_type_mapping.items():
+    for sqla_type, api_type in get_sqla_type_mapping().items():
         if isinstance(intype, sqla_type):
             return api_type
     return 'string'
@@ -52,8 +64,7 @@ class registerSchema(object):
                 'schema': {},
                 'datasource': {'source': cls_.__name__},
                 'item_lookup': True,
-                # TODO: Make these respect the ID_FIELD config of Eve
-                'item_lookup_field': '_id',
+                'item_lookup_field': config.ID_FIELD,
                 'item_url': 'regex("[0-9]+")'
             }
         }
@@ -74,12 +85,53 @@ class registerSchema(object):
                 schema = domain[resource]['schema'][prop.key] = {}
                 self.register_column(prop, schema, projection)
 
-            elif desc.extension_type is hybrid.HYBRID_PROPERTY:
+            elif desc.extension_type is HYBRID_PROPERTY:
                 schema = domain[resource]['schema'][desc.__name__] = {}
                 schema['unique'] = False
                 schema['required'] = False
+                schema['readonly'] = True
                 schema['type'] = 'string'
                 projection[desc.__name__] = 1
+
+        # Creation of a dictionnary of known attribute types (key ->
+        # descriptor) based on the presence of the 'extension_type' attribute.
+        attributes = dict(
+            (key, desc)
+            for key, desc in cls_.__dict__.items()
+            if getattr(desc, 'extension_type', False)
+        )
+
+        # Filter the attributes dictionnary to get only association proxies
+        association_proxies = dict(
+            (key, desc)
+            for key, desc in attributes.items()
+            if desc.extension_type is ASSOCIATION_PROXY
+        )
+
+        # Register association proxies according their 'remote_attr'
+        # attribute (usually a remote relationship in the association table).
+        for name, desc in association_proxies.items():
+            # Note(Kevin Roy): The direct call of __get__() is needed in order
+            # to set the 'owning_class' attribute and getting 'remote_attr'
+            # else we get an error according to corresponding source of
+            # association_proxy.
+
+            desc.__get__(None, cls_)
+            if hasattr(desc.remote_attr.property, 'target'):
+                r = desc.remote_attr.property.target.name
+            else:
+                r = desc.remote_attr.property.key
+
+            schema = domain[resource]['schema'][name] = {}
+            schema['type'] = 'list'
+            schema['schema'] = {
+                'type': 'objectid',
+                'data_relation': {
+                    'resource': r,
+                    'embeddable': True
+                }
+            }
+            projection[name] = 0
 
         cls_._eve_schema = domain
         return cls_

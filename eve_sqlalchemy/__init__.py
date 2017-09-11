@@ -8,20 +8,18 @@
 
 __version__ = '0.1-dev'
 
-import ast
 import simplejson as json
 import flask.ext.sqlalchemy as flask_sqlalchemy
 
 from flask import abort
-from datetime import datetime
 from copy import copy
-from sqlalchemy.orm.collections import InstrumentedList
 
-from eve.io.base import DataLayer, ConnectionException, BaseJSONEncoder
+from eve.io.base import ConnectionException
+from eve.io.base import DataLayer
 from eve.utils import config, debug_error_message, str_to_date
-from .parser import parse, parse_dictionary, ParseError, sqla_op
-from .structures import SQLAResult, SQLAResultCollection
-from .utils import dict_update, validate_filters
+from .parser import parse, parse_dictionary, ParseError, sqla_op, parse_sorting
+from .structures import SQLAResultCollection
+from .utils import dict_update, validate_filters, sqla_object_to_dict, extract_sort_arg, extract_distinct_arg
 
 
 db = flask_sqlalchemy.SQLAlchemy()
@@ -33,30 +31,10 @@ except NameError:
     string_type = str
 
 
-class SQLAJSONDecoder(json.JSONDecoder):
-    def decode(self, s):
-        # Turn RFC-1123 strings into datetime values.
-        rv = super(SQLAJSONDecoder, self).decode(s)
-        try:
-            key, val = rv.iteritems().next()
-            return dict(key=datetime.strptime(val, config.DATE_FORMAT))
-        except ValueError:
-            return rv
-
-
-class SQLAJSONEncoder(BaseJSONEncoder):
-    def default(self, obj):
-        if hasattr(obj, 'jsonify'):  # probably relationship
-            return obj.jsonify()
-        return super(SQLAJSONEncoder, self).default(obj)
-
-
 class SQL(DataLayer):
     """
     SQLAlchemy data access layer for Eve REST API.
     """
-    json_decoder_cls = SQLAJSONDecoder
-    json_encoder_class = SQLAJSONEncoder
     driver = db
     serializers = {'datetime': str_to_date}
 
@@ -116,7 +94,7 @@ class SQL(DataLayer):
         be expressed in two different formats: the mongo query syntax, and the
         python syntax. The first kind of query would look like: ::
 
-            ?where={"name": "john doe}
+            ?where={"name": "john doe"}
 
         while the second would look like: ::
 
@@ -128,9 +106,9 @@ class SQL(DataLayer):
         :param req: a :class:`ParsedRequest`instance.
         :param sub_resource_lookup: sub-resource lookup from the endpoint url.
         """
-        args = {
-            'sort': ast.literal_eval(req.sort) if req.sort else None
-        }
+        args = {'sort': extract_sort_arg(req),
+                'distinct': extract_distinct_arg(req),
+                'resource': resource}
 
         client_projection = self._client_projection(req)
         client_embedded = self._client_embedded(req)
@@ -171,17 +149,7 @@ class SQL(DataLayer):
         if args['sort']:
             ql = []
             for sort_item in args['sort']:
-                if '.' in sort_item[0]:  # sort by related mapper class
-                    rel, sort_attr = sort_item[0].split('.')
-                    rel_class = getattr(model, rel).property.mapper.class_
-                    query = query.outerjoin(rel_class)
-                    ql.append(getattr(rel_class, sort_attr)
-                              if sort_item[1] == 1
-                              else getattr(rel_class, sort_attr).desc())
-                else:
-                    ql.append(getattr(model, sort_item[0])
-                              if sort_item[1] == 1
-                              else getattr(model, sort_item[0]).desc())
+                ql.append(parse_sorting(model, query, *sort_item))
             args['sort'] = ql
 
         if req.max_results:
@@ -198,18 +166,18 @@ class SQL(DataLayer):
             self._datasource_ex(resource, [], client_projection, None,
                                 client_embedded)
 
-        if hasattr(lookup.get(config.ID_FIELD), '_sa_instance_state') \
-                or isinstance(lookup.get(config.ID_FIELD), InstrumentedList):
+        if isinstance(lookup.get(config.ID_FIELD), dict) \
+                or isinstance(lookup.get(config.ID_FIELD), list):
             # very dummy way to get the related object
             # that commes from embeddable parameter
-            return lookup.get(config.ID_FIELD)
+            return lookup
         else:
             filter_ = self.combine_queries(filter_,
                                            parse_dictionary(lookup, model))
             query = self.driver.session.query(model)
             document = query.filter(*filter_).first()
 
-        return SQLAResult(document, fields) if document else None
+        return sqla_object_to_dict(document, fields) if document else None
 
     def find_one_raw(self, resource, _id):
         raise NotImplementedError
@@ -224,17 +192,16 @@ class SQL(DataLayer):
             model_instance = model(**document)
             self.driver.session.add(model_instance)
             self.driver.session.commit()
-            # TODO: respect eve ID_FIELD
-            id_ = getattr(model_instance, '_id')
-            document['_id'] = id_
-            rv.append(id_)
+            id_field = getattr(model_instance, self.driver.app.config['ID_FIELD'])
+            document['_id'] = id_field
+            rv.append(id_field)
         return rv
 
-    def replace(self, resource, id_, document):
+    def replace(self, resource, id_, document, original):
         model, filter_, fields_, _ = self._datasource_ex(resource, [])
-        # TODO: respect eve ID_FIELD
+        id_field = self.driver.app.config['ID_FIELD']
         filter_ = self.combine_queries(filter_,
-                                       parse_dictionary({'_id': id_}, model))
+                                       parse_dictionary({id_field: id_}, model))
         query = self.driver.session.query(model)
 
         # Find and delete the old object
@@ -242,7 +209,6 @@ class SQL(DataLayer):
         if old_model_instance is None:
             abort(500, description=debug_error_message('Object not existent'))
         self.driver.session.delete(old_model_instance)
-        self.driver.session.commit()
 
         # create and insert the new one
         model_instance = model(**document)
@@ -250,11 +216,11 @@ class SQL(DataLayer):
         self.driver.session.add(model_instance)
         self.driver.session.commit()
 
-    def update(self, resource, id_, updates):
+    def update(self, resource, id_, updates, original):
         model, filter_, _, _ = self._datasource_ex(resource, [])
-        # TODO: respect eve ID_FIELD
+        id_field = self.driver.app.config['ID_FIELD']
         filter_ = self.combine_queries(filter_,
-                                       parse_dictionary({'_id': id_}, model))
+                                       parse_dictionary({id_field: id_}, model))
         query = self.driver.session.query(model)
         model_instance = query.filter(*filter_).first()
         if model_instance is None:
@@ -296,7 +262,7 @@ class SQL(DataLayer):
             filter = []
         return filter
 
-    def _datasource(self, resource):
+    def datasource(self, resource):
         """
         Overridden from super to return the actual model class of the database
         table instead of the name of it. We also parse the filter coming from
@@ -309,6 +275,12 @@ class SQL(DataLayer):
         projection_ = copy(config.SOURCES[resource]['projection'])
         sort_ = copy(config.SOURCES[resource]['default_sort'])
         return model, filter_, projection_, sort_
+
+    # NOTE(Gonéri): preserve the _datasource method for compatibiliy with
+    # pre 0.6 Eve release (See: commit 87742343fd0362354b9f75c749651f92d6e4a9c8
+    # from the Eve repository)
+    def _datasource(self, resource):
+        return self.datasource(resource)
 
     def _datasource_ex(self, resource, query=None, client_projection=None,
                        client_sort=None, client_embedded=None):
@@ -328,7 +300,7 @@ class SQL(DataLayer):
         return query_a
 
     def is_empty(self, resource):
-        model, filter_, _, _ = self._datasource(resource)
+        model, filter_, _, _ = self.datasource(resource)
         query = self.driver.session.query(model)
         if len(filter_):
             return query.filter_by(*filter_).count() == 0
